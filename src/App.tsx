@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Search, Heart, Star, Play, X, Calendar, Globe, Plus } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { Search, Heart, Star, X, Calendar, Globe, Plus } from 'lucide-react';
 
 // --- Types ---
 interface Movie {
