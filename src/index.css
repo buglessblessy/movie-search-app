@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+/* If you want to use @apply in your CSS, it works like this now */
+body {
+  @apply bg-[#141414] text-white;
+}
+
+/* Hide scrollbar for Chrome, Safari and Opera */
+.scrollbar-hide::-webkit-scrollbar {
+    display: none;
+}
+
+/* Hide scrollbar for IE, Edge and Firefox */
+.scrollbar-hide {
+    -ms-overflow-style: none;  /* IE and Edge */
+    scrollbar-width: none;  /* Firefox */
+}
