@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Search, Heart, Star, X, Calendar, Globe, Plus } from 'lucide-react';
+import { Search, Heart, Clock, History, X, Plus, Loader2 } from 'lucide-react';
 
-// --- Types ---
+// --- Interfaces & Constants ---
 interface Movie {
   id: number;
   title: string;
@@ -19,7 +19,7 @@ const IMAGE_PATH = "https://image.tmdb.org/t/p/w500";
 const BACKDROP_PATH = "https://image.tmdb.org/t/p/original";
 
 const LANGUAGES = [
-  { code: '', name: 'All' },
+  { code: '', name: 'All Languages' },
   { code: 'en', name: 'English' },
   { code: 'hi', name: 'Hindi' },
   { code: 'es', name: 'Spanish' },
@@ -28,165 +28,274 @@ const LANGUAGES = [
 ];
 
 const App = () => {
+  // --- State Management ---
   const [movies, setMovies] = useState<Movie[]>([]);
+  const [trendingMovies, setTrendingMovies] = useState<Movie[]>([]);
+  const [topRatedMovies, setTopRatedMovies] = useState<Movie[]>([]);
+
+  const [favorites, setFavorites] = useState<Movie[]>([]);
+  const [watchLater, setWatchLater] = useState<Movie[]>([]);
+  const [recentlyWatched, setRecentlyWatched] = useState<Movie[]>([]);
+
   const [page, setPage] = useState(1);
   const [query, setQuery] = useState('');
   const [language, setLanguage] = useState('');
-  const [favorites, setFavorites] = useState<Movie[]>([]);
+
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
+  const [trailerKey, setTrailerKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // 1. Initial Load & Persistence
+  // --- Persistence Engine ---
   useEffect(() => {
-    const saved = localStorage.getItem('movieflix-favs');
-    if (saved) setFavorites(JSON.parse(saved));
+    const fav = localStorage.getItem('movieflix-favorites');
+    const later = localStorage.getItem('movieflix-watchlater');
+    const recent = localStorage.getItem('movieflix-recent');
+
+    if (fav) setFavorites(JSON.parse(fav));
+    if (later) setWatchLater(JSON.parse(later));
+    if (recent) setRecentlyWatched(JSON.parse(recent));
   }, []);
 
   useEffect(() => {
-    localStorage.setItem('movieflix-favs', JSON.stringify(favorites));
-  }, [favorites]);
+    localStorage.setItem('movieflix-favorites', JSON.stringify(favorites));
+    localStorage.setItem('movieflix-watchlater', JSON.stringify(watchLater));
+    localStorage.setItem('movieflix-recent', JSON.stringify(recentlyWatched));
+  }, [favorites, watchLater, recentlyWatched]);
 
-  // 2. Fetch Logic (Handles Appending for "Load More")
-  const fetchMovies = useCallback(async (isNewSearch: boolean = false) => {
+  // --- Fetch Logic ---
+  const fetchMovies = useCallback(async (pageNumber = 1, reset = false) => {
     setLoading(true);
-    const currentPage = isNewSearch ? 1 : page;
-    
-    let url = `${BASE_URL}/discover/movie?page=${currentPage}&sort_by=popularity.desc`;
-    
-    if (query) {
-      url = `${BASE_URL}/search/movie?query=${encodeURIComponent(query)}&page=${currentPage}`;
-    } else if (language) {
-      url += `&with_original_language=${language}`;
+    let url = "";
+
+    // Search endpoint does not support with_original_language, so we handle logic branch
+    if (query.trim()) {
+      url = `${BASE_URL}/search/movie?query=${encodeURIComponent(query)}&page=${pageNumber}`;
+    } else {
+      url = `${BASE_URL}/discover/movie?page=${pageNumber}&sort_by=popularity.desc`;
+      if (language) url += `&with_original_language=${language}`;
     }
 
     try {
       const res = await fetch(url, {
-        headers: { accept: 'application/json', Authorization: `Bearer ${ACCESS_TOKEN}` }
+        headers: {
+          accept: 'application/json',
+          Authorization: `Bearer ${ACCESS_TOKEN}`,
+        },
       });
+
       const data = await res.json();
-      
-      if (isNewSearch) {
-        setMovies(data.results || []);
-      } else {
-        setMovies(prev => [...prev, ...(data.results || [])]);
+      let results = data.results || [];
+
+      // Local filter for search results since TMDB API doesn't support search + language filter in one call
+      if (query.trim() && language) {
+        results = results.filter((m: Movie) => m.original_language === language);
       }
-    } catch (err) {
-      console.error(err);
+
+      if (reset) setMovies(results);
+      else setMovies(prev => [...prev, ...results]);
+    } catch (error) {
+      console.error("Error fetching movies:", error);
     } finally {
       setLoading(false);
     }
-  }, [query, language, page]);
-
-  // 3. Trigger fetch on filter change
-  useEffect(() => {
-    setPage(1);
-    fetchMovies(true);
   }, [query, language]);
 
-  // 4. Trigger fetch on page change (Load More)
-  useEffect(() => {
-    if (page > 1) fetchMovies(false);
-  }, [page]);
+  const fetchTrendingMovies = async () => {
+    const res = await fetch(`${BASE_URL}/trending/movie/day`, {
+      headers: { accept: 'application/json', Authorization: `Bearer ${ACCESS_TOKEN}` },
+    });
+    const data = await res.json();
+    setTrendingMovies(data.results || []);
+  };
 
+  const fetchTopRatedMovies = async () => {
+    const res = await fetch(`${BASE_URL}/movie/top_rated`, {
+      headers: { accept: 'application/json', Authorization: `Bearer ${ACCESS_TOKEN}` },
+    });
+    const data = await res.json();
+    setTopRatedMovies(data.results || []);
+  };
+
+  // --- Search & Language Watcher (Debounced) ---
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setPage(1);
+      fetchMovies(1, true);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [query, language, fetchMovies]);
+
+  // --- Load More Watcher ---
+  useEffect(() => {
+    if (page > 1) fetchMovies(page, false);
+  }, [page, fetchMovies]);
+
+  // --- Initial Mount ---
+  useEffect(() => {
+    fetchTrendingMovies();
+    fetchTopRatedMovies();
+  }, []);
+
+  // --- Trailer & Recent Logic ---
+  useEffect(() => {
+    const fetchTrailer = async () => {
+      if (!selectedMovie) return;
+
+      const res = await fetch(`${BASE_URL}/movie/${selectedMovie.id}/videos`, {
+        headers: { accept: 'application/json', Authorization: `Bearer ${ACCESS_TOKEN}` },
+      });
+
+      const data = await res.json();
+      const trailer = data.results.find(
+        (video: any) => video.type === 'Trailer' && video.site === 'YouTube'
+      );
+
+      setTrailerKey(trailer ? trailer.key : null);
+
+      setRecentlyWatched(prev => {
+        const filtered = prev.filter(m => m.id !== selectedMovie.id);
+        return [selectedMovie, ...filtered].slice(0, 10);
+      });
+    };
+
+    fetchTrailer();
+  }, [selectedMovie]);
+
+  // --- Interactive Handlers ---
   const toggleFavorite = (movie: Movie) => {
-    const isFav = favorites.find((f) => f.id === movie.id);
-    if (isFav) setFavorites(favorites.filter((f) => f.id !== movie.id));
+    const exists = favorites.find(m => m.id === movie.id);
+    if (exists) setFavorites(favorites.filter(m => m.id !== movie.id));
     else setFavorites([...favorites, movie]);
+  };
+
+  const toggleWatchLater = (movie: Movie) => {
+    const exists = watchLater.find(m => m.id === movie.id);
+    if (exists) setWatchLater(watchLater.filter(m => m.id !== movie.id));
+    else setWatchLater([...watchLater, movie]);
   };
 
   return (
     <div className="min-h-screen bg-[#141414] text-white pb-20 font-sans">
-      {/* Navbar */}
-      <nav className="sticky top-0 z-40 bg-[#141414]/95 backdrop-blur-md px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4 border-b border-white/5">
-        <h1 className="text-3xl font-black text-red-600 tracking-tighter uppercase cursor-pointer" onClick={() => {setQuery(''); setLanguage('');}}>
-          Movieflix
-        </h1>
-        <div className="relative w-full max-w-md">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500 w-5 h-5" />
-          <input
-            type="text"
-            placeholder="Search movies..."
-            className="w-full bg-zinc-900 border border-zinc-700 py-2.5 pl-12 pr-4 rounded-md focus:outline-none focus:ring-1 focus:ring-red-600 text-sm"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
+      {/* Navigation */}
+      <nav className="sticky top-0 z-50 bg-[#141414]/90 backdrop-blur-md px-6 py-4 flex flex-col md:flex-row justify-between items-center gap-4 border-b border-white/5">
+        <h1 className="text-3xl font-black text-red-600 uppercase tracking-tighter">Movieflix</h1>
+
+        <div className="flex items-center gap-4 w-full md:w-auto">
+          <div className="relative w-full md:w-80">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={18} />
+            <input
+              type="text"
+              placeholder="Search movies..."
+              className="w-full bg-zinc-900 border border-zinc-700 py-2 pl-10 pr-4 rounded-lg focus:outline-none focus:border-red-600 transition-all"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
+
+          <select
+            value={language}
+            onChange={(e) => setLanguage(e.target.value)}
+            className="bg-zinc-900 border border-zinc-700 px-3 py-2 rounded-lg text-sm outline-none"
+          >
+            {LANGUAGES.map(lang => (
+              <option key={lang.code} value={lang.code}>
+                {lang.name}
+              </option>
+            ))}
+          </select>
         </div>
       </nav>
 
-      {/* Language Filter Row */}
-      <div className="px-6 mt-6 flex gap-3 overflow-x-auto scrollbar-hide py-2">
-        {LANGUAGES.map((lang) => (
-          <button
-            key={lang.code}
-            onClick={() => setLanguage(lang.code)}
-            className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all whitespace-nowrap border ${
-              language === lang.code ? 'bg-white text-black border-white' : 'bg-transparent text-zinc-400 border-zinc-700 hover:border-zinc-500'
-            }`}
-          >
-            {lang.name}
-          </button>
-        ))}
-      </div>
-
-      <main className="px-6 mt-8">
-        {/* Watchlist Section */}
-        {favorites.length > 0 && !query && (
-          <div className="mb-12">
-            <h3 className="text-xs font-bold text-zinc-500 mb-4 uppercase tracking-[0.2em]">My Watchlist</h3>
-            <div className="flex gap-4 overflow-x-auto scrollbar-hide pb-4">
-              {favorites.map((m) => (
-                <MovieCard key={m.id} movie={m} isFav={true} onToggle={toggleFavorite} onOpen={() => setSelectedMovie(m)} size="small" />
-              ))}
-            </div>
-          </div>
+      <main className="px-6 mt-8 space-y-12">
+        {/* Curated Rows */}
+        {recentlyWatched.length > 0 && (
+          <Row title="🕒 Recently Watched" movies={recentlyWatched} onOpen={setSelectedMovie} />
+        )}
+        {watchLater.length > 0 && (
+          <Row title="⏳ Watch Later" movies={watchLater} onOpen={setSelectedMovie} />
+        )}
+        {favorites.length > 0 && (
+          <Row title="❤️ Favorites" movies={favorites} onOpen={setSelectedMovie} />
         )}
 
-        {/* Results Grid */}
-        <h3 className="text-xl font-bold mb-6 text-zinc-100 uppercase tracking-tight">
-          {query ? `Results for "${query}"` : `${LANGUAGES.find(l => l.code === language)?.name} Movies`}
-        </h3>
+        <Row title="🔥 Trending" movies={trendingMovies} onOpen={setSelectedMovie} />
+        <Row title="⭐ Top Rated" movies={topRatedMovies} onOpen={setSelectedMovie} />
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-x-4 gap-y-10">
-          {movies.map((m) => (
-            <MovieCard 
-              key={m.id} 
-              movie={m} 
-              isFav={!!favorites.find(f => f.id === m.id)} 
-              onToggle={toggleFavorite} 
-              onOpen={() => setSelectedMovie(m)} 
-            />
-          ))}
+        {/* Explore Grid */}
+        <div>
+          <h2 className="text-2xl font-bold mb-6 flex items-center gap-2">
+            Explore All 
+            {loading && <Loader2 className="animate-spin text-red-600" size={20} />}
+          </h2>
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-6">
+            {movies.map(movie => (
+              <MovieCard
+                key={movie.id}
+                movie={movie}
+                onOpen={() => setSelectedMovie(movie)}
+                isFav={!!favorites.find(f => f.id === movie.id)}
+                isLater={!!watchLater.find(f => f.id === movie.id)}
+                toggleFavorite={toggleFavorite}
+                toggleWatchLater={toggleWatchLater}
+              />
+            ))}
+          </div>
         </div>
 
         {/* Load More Button */}
-        <div className="mt-16 flex justify-center">
-          <button 
-            onClick={() => setPage(prev => prev + 1)}
+        <div className="flex justify-center pt-8">
+          <button
+            onClick={() => setPage(p => p + 1)}
             disabled={loading}
-            className="flex items-center gap-2 px-8 py-3 bg-zinc-800 hover:bg-zinc-700 rounded-md font-bold transition-all disabled:opacity-50"
+            className="flex items-center gap-2 px-10 py-3 bg-red-600 hover:bg-red-700 rounded-full font-bold transition-all active:scale-95 disabled:opacity-50"
           >
-            {loading ? 'Loading...' : <><Plus size={20} /> Load More Movies</>}
+            {loading ? <Loader2 className="animate-spin" /> : <Plus size={20} />}
+            Load More Movies
           </button>
         </div>
       </main>
 
-      {/* Movie Details Modal (Same as before) */}
+      {/* Modal / Detail View */}
       {selectedMovie && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/90 backdrop-blur-sm">
-          <div className="relative w-full max-w-3xl bg-[#181818] rounded-xl overflow-hidden shadow-2xl overflow-y-auto max-h-[90vh]">
-            <button onClick={() => setSelectedMovie(null)} className="absolute top-4 right-4 z-10 p-2 bg-black/50 rounded-full hover:bg-black transition-colors"><X size={20} /></button>
-            <div className="relative h-64 md:h-96">
-              <img src={selectedMovie.backdrop_path ? BACKDROP_PATH + selectedMovie.backdrop_path : IMAGE_PATH + selectedMovie.poster_path} className="w-full h-full object-cover" alt="Backdrop" />
-              <div className="absolute inset-0 bg-gradient-to-t from-[#181818] via-transparent" />
-            </div>
-            <div className="p-8">
-              <div className="flex items-center gap-4 mb-4 text-sm text-zinc-400">
-                <span className="text-green-400 font-bold flex items-center gap-1"><Star size={16} className="fill-current" /> {selectedMovie.vote_average.toFixed(1)}</span>
-                <span className="flex items-center gap-1"><Calendar size={16} /> {selectedMovie.release_date}</span>
-                <span className="flex items-center gap-1 uppercase"><Globe size={16} /> {selectedMovie.original_language}</span>
+        <div className="fixed inset-0 z-[100] bg-black/95 flex items-center justify-center p-4">
+          <div className="bg-[#181818] max-w-4xl w-full rounded-2xl overflow-hidden relative max-h-[90vh] shadow-2xl">
+            <button 
+                onClick={() => setSelectedMovie(null)} 
+                className="absolute top-4 right-4 z-10 bg-black/50 p-2 rounded-full hover:bg-white/10 transition-colors"
+            >
+              <X size={24} />
+            </button>
+
+            <div className="overflow-y-auto max-h-[90vh]">
+              <img
+                src={BACKDROP_PATH + (selectedMovie.backdrop_path || selectedMovie.poster_path)}
+                className="w-full h-64 md:h-96 object-cover"
+                alt="Backdrop"
+              />
+
+              <div className="p-8">
+                <div className="flex justify-between items-start mb-4">
+                    <h2 className="text-4xl font-black italic uppercase tracking-tighter leading-none">{selectedMovie.title}</h2>
+                    <span className="text-red-600 font-bold text-xl">⭐ {selectedMovie.vote_average.toFixed(1)}</span>
+                </div>
+
+                <p className="text-gray-400 text-lg leading-relaxed mb-8">{selectedMovie.overview}</p>
+
+                {trailerKey ? (
+                  <div className="rounded-xl overflow-hidden shadow-2xl border border-white/5">
+                    <iframe
+                      width="100%"
+                      className="aspect-video"
+                      src={`https://www.youtube.com/embed/${trailerKey}?autoplay=1`}
+                      allowFullScreen
+                    />
+                  </div>
+                ) : (
+                    <div className="h-40 bg-zinc-900 flex items-center justify-center rounded-xl text-zinc-600 italic">
+                        No official trailer found.
+                    </div>
+                )}
               </div>
-              <h2 className="text-4xl font-black mb-4 uppercase">{selectedMovie.title}</h2>
-              <p className="text-zinc-400 leading-relaxed mb-8">{selectedMovie.overview}</p>
             </div>
           </div>
         </div>
@@ -195,19 +304,68 @@ const App = () => {
   );
 };
 
-// MovieCard Component
-const MovieCard = ({ movie, isFav, onToggle, onOpen, size = "large" }: any) => (
-  <div onClick={onOpen} className={`group relative cursor-pointer ${size === 'small' ? 'min-w-[160px] w-[160px]' : 'w-full'}`}>
-    <div className="relative overflow-hidden rounded-md aspect-[2/3] transition-all duration-300 group-hover:scale-105 shadow-lg">
-      <img src={movie.poster_path ? IMAGE_PATH + movie.poster_path : "https://via.placeholder.com/500x750?text=No+Poster"} className="w-full h-full object-cover" loading="lazy" />
-      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity p-4 flex flex-col justify-end">
-        <button onClick={(e) => { e.stopPropagation(); onToggle(movie); }} className="absolute top-2 right-2 p-2 rounded-full bg-black/40 hover:bg-black/80">
-          <Heart size={16} className={isFav ? 'fill-red-600 text-red-600' : 'text-white'} />
+// --- Row Component ---
+const Row = ({ title, movies, onOpen }: any) => (
+  <div className="group">
+    <h2 className="text-xl font-bold mb-4 px-2">{title}</h2>
+    <div className="flex gap-4 overflow-x-auto pb-4 px-2 scrollbar-hide">
+      {movies.map((movie: Movie) => (
+        <div
+          key={movie.id}
+          className="min-w-[140px] md:min-w-[180px] cursor-pointer hover:scale-105 transition-transform duration-300"
+          onClick={() => onOpen(movie)}
+        >
+          <div className="relative rounded-lg overflow-hidden shadow-lg border border-white/5">
+            <img
+              src={IMAGE_PATH + movie.poster_path}
+              className="h-[210px] md:h-[270px] w-full object-cover"
+              alt={movie.title}
+              onError={(e:any) => e.target.src = 'https://via.placeholder.com/500x750?text=No+Poster'}
+            />
+          </div>
+          <p className="text-sm mt-2 font-medium truncate text-gray-300">{movie.title}</p>
+        </div>
+      ))}
+    </div>
+  </div>
+);
+
+// --- MovieCard Component ---
+const MovieCard = ({ movie, onOpen, isFav, isLater, toggleFavorite, toggleWatchLater }: any) => (
+  <div className="group flex flex-col">
+    <div className="relative aspect-[2/3] rounded-xl overflow-hidden shadow-xl bg-zinc-900 border border-white/5">
+      <img
+        src={IMAGE_PATH + movie.poster_path}
+        className="w-full h-full object-cover cursor-pointer group-hover:scale-110 transition-transform duration-500"
+        onClick={onOpen}
+        alt={movie.title}
+        onError={(e:any) => e.target.src = 'https://via.placeholder.com/500x750?text=No+Poster'}
+      />
+
+      <div className="absolute top-2 right-2 flex flex-col gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+        <button
+          onClick={(e) => { e.stopPropagation(); toggleFavorite(movie); }}
+          className="bg-black/70 backdrop-blur-md p-2 rounded-full hover:bg-red-600 transition-all"
+        >
+          <Heart size={16} className={isFav ? 'text-white fill-white' : 'text-white'} />
         </button>
-        <p className="text-[10px] font-black text-white mb-2 uppercase line-clamp-1">{movie.title}</p>
+
+        <button
+          onClick={(e) => { e.stopPropagation(); toggleWatchLater(movie); }}
+          className="bg-black/70 backdrop-blur-md p-2 rounded-full hover:bg-yellow-500 transition-all"
+        >
+          <Clock size={16} className={isLater ? 'text-yellow-400 fill-yellow-400' : 'text-white'} />
+        </button>
       </div>
     </div>
-    <div className="mt-2"><h4 className="text-[11px] font-bold truncate text-zinc-500 group-hover:text-white uppercase tracking-tight">{movie.title}</h4></div>
+
+    <div className="mt-3 px-1">
+      <p className="text-sm font-bold truncate group-hover:text-red-500 transition-colors uppercase tracking-tight">{movie.title}</p>
+      <div className="flex justify-between items-center mt-1">
+          <span className="text-[10px] text-zinc-500 font-bold">{movie.release_date?.split('-')[0]}</span>
+          <span className="text-[10px] text-red-500 font-black">★ {movie.vote_average.toFixed(1)}</span>
+      </div>
+    </div>
   </div>
 );
 
