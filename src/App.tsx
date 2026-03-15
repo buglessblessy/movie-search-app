@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
+
 import { 
-  Search, Heart, Clock, X, Plus, Loader2, ImageOff, 
-  Trash2, SlidersHorizontal, Play, Star, Globe, Users, Calendar, RefreshCcw
+  Search, Heart, Clock, X, ImageOff, 
+  SlidersHorizontal, Play, Star, Globe, Users, Calendar, RefreshCcw
 } from 'lucide-react';
 
 // --- Interfaces & Constants ---
